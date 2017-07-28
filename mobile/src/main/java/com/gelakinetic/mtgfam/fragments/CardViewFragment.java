@@ -60,6 +60,7 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -83,6 +84,8 @@ import com.gelakinetic.mtgfam.helpers.lruCache.RecyclingBitmapDrawable;
 import com.octo.android.robospice.persistence.DurationInMillis;
 import com.octo.android.robospice.persistence.exception.SpiceException;
 import com.octo.android.robospice.request.listener.RequestListener;
+import com.squareup.picasso.Callback;
+import com.squareup.picasso.Picasso;
 
 import org.apache.commons.io.IOUtils;
 import org.jsoup.Jsoup;
@@ -108,6 +111,10 @@ public class CardViewFragment extends FamiliarFragment {
     /* Bundle constant */
     public static final String CARD_ID = "card_id";
 
+    public enum ImageContext {
+        MAIN_PAGE, DIALOG, SHARE
+    }
+
     /* Where the card image is loaded to */
     public static final int MAIN_PAGE = 1;
     private static final int DIALOG = 2;
@@ -127,6 +134,7 @@ public class CardViewFragment extends FamiliarFragment {
     private Button mTransformButton;
     private View mTransformButtonDivider;
     private ImageView mCardImageView;
+    private ProgressBar ivProgressBar;
     private ScrollView mTextScrollView;
     private ScrollView mImageScrollView;
     private LinearLayout mColorIndicatorLayout;
@@ -305,6 +313,7 @@ public class CardViewFragment extends FamiliarFragment {
         mTextScrollView = (ScrollView) myFragmentView.findViewById(R.id.cardTextScrollView);
         mImageScrollView = (ScrollView) myFragmentView.findViewById(R.id.cardImageScrollView);
         mCardImageView = (ImageView) myFragmentView.findViewById(R.id.cardpic);
+        ivProgressBar = (ProgressBar) myFragmentView.findViewById(R.id.ivProgressBar);
         mColorIndicatorLayout = (LinearLayout) myFragmentView.findViewById(R.id.color_indicator_view);
 
         registerForContextMenu(mNameTextView);
@@ -353,7 +362,7 @@ public class CardViewFragment extends FamiliarFragment {
     @Override
     public void onDestroyView() {
         super.onDestroyView();
-        releaseImageResources(false);
+//        releaseImageResources(false);
     }
 
     /**
@@ -652,7 +661,7 @@ public class CardViewFragment extends FamiliarFragment {
             } else {
                 mTransformButton.setOnClickListener(new View.OnClickListener() {
                     public void onClick(View v) {
-                        releaseImageResources(true);
+//                        releaseImageResources(true);
                         mCardNumber = mTransformCardNumber;
                         setInfoFromID(mTransformId);
                     }
@@ -667,12 +676,15 @@ public class CardViewFragment extends FamiliarFragment {
             mImageScrollView.setVisibility(View.VISIBLE);
             mTextScrollView.setVisibility(View.GONE);
 
-            mActivity.setLoading();
-            if (mAsyncTask != null) {
-                mAsyncTask.cancel(true);
-            }
-            mAsyncTask = new FetchPictureTask();
-            ((FetchPictureTask) mAsyncTask).execute(MAIN_PAGE);
+//            mActivity.setLoading();
+//            if (mAsyncTask != null) {
+//                mAsyncTask.cancel(true);
+//            }
+//            mAsyncTask = new FetchPictureTask();
+//            ((FetchPictureTask) mAsyncTask).execute(MAIN_PAGE);
+
+            fetchPicture(ImageContext.MAIN_PAGE);
+
         } else {
             mImageScrollView.setVisibility(View.GONE);
             mTextScrollView.setVisibility(View.VISIBLE);
@@ -1226,9 +1238,159 @@ public class CardViewFragment extends FamiliarFragment {
         }
     }
 
+    public void fetchPicture(ImageContext context) {
+        ivProgressBar.setVisibility(View.VISIBLE);
+
+        /* Some trickery to figure out if we have a token */
+        boolean isToken = false;
+        if (mCardType.contains("Token") || /* try to take the easy way out */
+                (mCardCMC == 0 && /* Tokens have a CMC of 0 */
+                        mSetName.contains("Duel Decks") && /* The only tokens in Gatherer are from Duel Decks */
+                        mCardType.contains("Creature"))) { /* The only tokens in Gatherer are creatures */
+            isToken = true;
+        }
+
+        boolean bRetry = true;
+
+        boolean triedMtgi = false;
+        boolean triedGatherer = false;
+        boolean triedScryfall = false;
+
+        while (bRetry) {
+            String mError;
+
+            String cardLanguage = mActivity.mPreferenceAdapter.getCardLanguage();
+            if (cardLanguage == null) {
+                cardLanguage = "en";
+            }
+
+            final String mImageKey = Integer.toString(mMultiverseId) + cardLanguage;
+
+            bRetry = false;
+            mError = null;
+            URL u = null;
+
+            try {
+                if (!cardLanguage.equalsIgnoreCase("en") && !isToken) {
+                            /* Non-English have to come from magiccards.info. Try there first */
+                    u = new URL(getMtgiPicUrl(mCardName, mMagicCardsInfoSetCode, mCardNumber, cardLanguage));
+                            /* If this fails, try next time with the English version */
+                    cardLanguage = "en";
+                } else if (!triedScryfall && !isToken) {
+                            /* Try downloading the image from Scryfall next */
+                    u = new URL(getScryfallImageUri(mMultiverseId));
+                            /* If this fails, try next time with the Magiccards.info version */
+                    triedScryfall = true;
+                } else if (!triedMtgi && !isToken) {
+                            /* Try downloading the image from magiccards.info next */
+                    u = new URL(getMtgiPicUrl(mCardName, mMagicCardsInfoSetCode, mCardNumber, cardLanguage));
+                            /* If this fails, try next time with the gatherer version */
+                    triedMtgi = true;
+                } else {
+                            /* Try downloading the image from gatherer */
+                    u = new URL("http://gatherer.wizards.com/Handlers/Image.ashx?multiverseid=" + mMultiverseId + "&type=card");
+                            /* If this fails, give up */
+                    triedGatherer = true;
+                }
+
+                if (context == ImageContext.MAIN_PAGE) {
+                    Picasso.with(mActivity).load(String.valueOf(u)).into(mCardImageView, new Callback() {
+                        @Override
+                        public void onSuccess() {
+                            if (CardViewFragment.this.isVisible()) {
+                                ivProgressBar.setVisibility(View.GONE);
+                            /* Cache it */
+                                getFamiliarActivity().mImageCache.addBitmapToCache(mImageKey, new BitmapDrawable(mActivity.getResources(), ((BitmapDrawable) mCardImageView.getDrawable()).getBitmap()));
+                            }
+                        }
+
+                        @Override
+                        public void onError() {
+                            ivProgressBar.setVisibility(View.GONE);
+                            ToastWrapper.makeText(mActivity, getString(R.string.card_view_image_not_found), ToastWrapper.LENGTH_LONG).show();
+
+                            mImageScrollView.setVisibility(View.GONE);
+                            mTextScrollView.setVisibility(View.VISIBLE);
+                        }
+                    });
+                }
+            } catch (Exception e) {
+                /* Something went wrong */
+                try {
+                    mError = getString(R.string.card_view_image_not_found);
+                } catch (Exception re) {
+                    /* in case the fragment isn't attached to an activity */
+                    mError = re.toString();
+                }
+
+                /* Gatherer is always tried last. If that fails, give up */
+                if (!triedGatherer) {
+                    bRetry = true;
+                } else {
+                    ToastWrapper.makeText(mActivity, mError, ToastWrapper.LENGTH_LONG).show();
+                }
+            }
+        }
+    }
+
+    private String getMtgiPicUrl(String cardName, String magicCardsInfoSetCode, String cardNumber,
+                                 String cardLanguage) {
+        String picURL;
+        if (mCardType.toLowerCase().contains(getString(R.string.search_Ongoing).toLowerCase()) ||
+                    /* extra space to not confuse with planeswalker */
+                mCardType.toLowerCase().contains(getString(R.string.search_Plane).toLowerCase() + " ") ||
+                mCardType.toLowerCase().contains(getString(R.string.search_Phenomenon).toLowerCase()) ||
+                mCardType.toLowerCase().contains(getString(R.string.search_Scheme).toLowerCase())) {
+            switch (mSetCode) {
+                case "PC2":
+                    picURL = "http://magiccards.info/extras/plane/planechase-2012-edition/" + cardName + ".jpg";
+                    picURL = picURL.replace(" ", "-")
+                            .replace("?", "").replace(",", "").replace("'", "").replace("!", "");
+                    break;
+                case "PCH":
+                    if (cardName.equalsIgnoreCase("tazeem")) {
+                        cardName = "tazeem-release-promo";
+                    } else if (cardName.equalsIgnoreCase("celestine reef")) {
+                        cardName = "celestine-reef-pre-release-promo";
+                    } else if (cardName.equalsIgnoreCase("horizon boughs")) {
+                        cardName = "horizon-boughs-gateway-promo";
+                    }
+                    picURL = "http://magiccards.info/extras/plane/planechase/" + cardName + ".jpg";
+                    picURL = picURL.replace(" ", "-")
+                            .replace("?", "").replace(",", "").replace("'", "").replace("!", "");
+                    break;
+                case "ARC":
+                    picURL = "http://magiccards.info/extras/scheme/archenemy/" + cardName + ".jpg";
+                    picURL = picURL.replace(" ", "-")
+                            .replace("?", "").replace(",", "").replace("'", "").replace("!", "");
+                    break;
+                default:
+                    picURL = "http://magiccards.info/scans/" + cardLanguage + "/" + magicCardsInfoSetCode + "/" +
+                            cardNumber + ".jpg";
+                    break;
+            }
+        } else {
+            picURL = "http://magiccards.info/scans/" + cardLanguage + "/" + magicCardsInfoSetCode + "/" +
+                    cardNumber + ".jpg";
+        }
+        return picURL.toLowerCase(Locale.ENGLISH);
+    }
+
+    /**
+     * Easily gets the uri for the image for a card by multiverseid
+     *
+     * @param multiverseId the multiverse id of the card
+     * @return uri of the card image
+     */
+    private String getScryfallImageUri(int multiverseId) {
+        return "https://api.scryfall.com/cards/multiverse/" + multiverseId + "?format=image";
+    }
+
+
     /**
      * This private class retrieves a picture of the card from the internet
      */
+    // todo
     private class FetchPictureTask extends AsyncTask<Integer, Void, Void> {
 
         int mHeight;
@@ -1299,9 +1461,9 @@ public class CardViewFragment extends FamiliarFragment {
                 /* Some trickery to figure out if we have a token */
                 boolean isToken = false;
                 if (mCardType.contains("Token") || /* try to take the easy way out */
-                    (mCardCMC == 0 && /* Tokens have a CMC of 0 */
-                     mSetName.contains("Duel Decks") && /* The only tokens in Gatherer are from Duel Decks */
-                     mCardType.contains("Creature"))) { /* The only tokens in Gatherer are creatures */
+                        (mCardCMC == 0 && /* Tokens have a CMC of 0 */
+                                mSetName.contains("Duel Decks") && /* The only tokens in Gatherer are from Duel Decks */
+                                mCardType.contains("Creature"))) { /* The only tokens in Gatherer are creatures */
                     isToken = true;
                 }
 
@@ -1714,6 +1876,8 @@ public class CardViewFragment extends FamiliarFragment {
                 return getString(R.string.card_view_unable_to_create_file);
             }
 
+            FileOutputStream fStream = new FileOutputStream(fPath);
+
             /* If the card is displayed, there's a real good chance it's cached */
             String cardLanguage = mActivity.mPreferenceAdapter.getCardLanguage();
             if (cardLanguage == null) {
@@ -1741,8 +1905,6 @@ public class CardViewFragment extends FamiliarFragment {
             if (bmpImage == null) {
                 return getString(R.string.card_view_no_image);
             }
-
-            FileOutputStream fStream = new FileOutputStream(fPath);
 
             boolean bCompressed = bmpImage.compress(Bitmap.CompressFormat.JPEG, 90, fStream);
             fStream.flush();

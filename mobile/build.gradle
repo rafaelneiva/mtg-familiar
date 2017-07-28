@@ -116,4 +116,5 @@ dependencies {
     compile 'com.github.machinarius:preferencefragment:0.1.2'
     compile 'org.jsoup:jsoup:1.10.2'
     compile "com.splitwise:tokenautocomplete:2.0.8@aar"
+    compile 'com.squareup.picasso:picasso:2.5.2'
 }
